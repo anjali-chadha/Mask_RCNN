@@ -3,47 +3,55 @@ import sys
 import time
 from xml.dom import minidom
 import argparse
-
 import numpy as np
 import skimage.io
-
-# Root directory of the project
-ROOT_DIR = os.path.abspath("Mask_RCNN/")
-# Import Mask RCNN
-sys.path.append(ROOT_DIR)  # To find local version of the library
-
 from mrcnn import utils
 import mrcnn.model as modellib
 from mrcnn import visualize
-# Import COCO config
-sys.path.append(os.path.join(ROOT_DIR, "samples/coco/"))  # To find local version
-import coco
+import tensorflow as tf
 
-# Directory to save logs and trained model
-MODEL_DIR = os.path.join(ROOT_DIR, "logs")
+import keras.backend
+config = tf.ConfigProto()
+config.inter_op_parallelism_threads = 1
+keras.backend.set_session(tf.Session(config=config))
+config = None
+mask_rcnn_model = None
 
-# Local path to trained weights file
-COCO_MODEL_PATH = os.path.join(ROOT_DIR, "mask_rcnn_coco.h5")
-# Download COCO trained weights from Releases if needed
-if not os.path.exists(COCO_MODEL_PATH):
-    utils.download_trained_weights(COCO_MODEL_PATH)
+def create_config():
+    import coco
 
-# Directory of images to run detection on
-IMAGE_DIR = 'Mask_RCNN/RTTS/DemoImages/'
+    class InferenceConfig(coco.CocoConfig):
+        # Set batch size to 1 since we'll be running inference on
+        # one image at a time. Batch size = GPU_COUNT * IMAGES_PER_GPU
+        GPU_COUNT = 1
+        IMAGES_PER_GPU = 1
+        BATCH_SIZE = 1
 
-class InferenceConfig(coco.CocoConfig):
-    # Set batch size to 1 since we'll be running inference on
-    # one image at a time. Batch size = GPU_COUNT * IMAGES_PER_GPU
-    GPU_COUNT = 1
-    IMAGES_PER_GPU = 1
+    print("Start creating config")
+    c = InferenceConfig()
+    print("Created config")
+    c.display()
+    return c
 
-config = InferenceConfig()
-config.display()
-# Create model object in inference mode.
-model = modellib.MaskRCNN(mode="inference", model_dir=MODEL_DIR, config=config)
 
-# Load weights trained on MS-COCO
-model.load_weights(COCO_MODEL_PATH, by_name=True)
+def load_mrcnn_model(root_dir, gpuId):
+    # Directory to save logs and trained model
+    MODEL_DIR = os.path.join(root_dir, "logs")
+
+    # Local path to trained weights file
+    COCO_MODEL_PATH = os.path.join(root_dir, "mask_rcnn_coco.h5")
+    # Download COCO trained weights from Releases if needed
+    if not os.path.exists(COCO_MODEL_PATH):
+        utils.download_trained_weights(COCO_MODEL_PATH)
+
+    DEVICE = "/gpu:"+gpuId  # /cpu:0 or /gpu:0
+    # Create model object in inference mode.
+    # with tf.device(DEVICE):
+    model = modellib.MaskRCNN(mode="inference", model_dir=MODEL_DIR, config=config)
+    # Load weights trained on MS-COCO
+    model.load_weights(COCO_MODEL_PATH, by_name=True)
+    return model
+
 
 def parse_annotation(image_name, file_dir):
     '''
@@ -139,10 +147,14 @@ def get_name_id(name):
 
 
 def mAP_test(image_dir, file_dir):
+
     APs = []
     t1 = time.time()
     image_names = next(os.walk(image_dir))[2]
-    image_names.sort()
+    print("Sorting")
+    # image_names.sort()
+    i = 1
+    print("Started")
     for image_name in image_names:
         image = skimage.io.imread(os.path.join(image_dir, image_name))
         image, window, scale, padding, crop = utils.resize_image(
@@ -151,6 +163,12 @@ def mAP_test(image_dir, file_dir):
             min_scale=config.IMAGE_MIN_SCALE,
             max_dim=config.IMAGE_MAX_DIM,
             mode=config.IMAGE_RESIZE_MODE)
+
+        # If image name has prefix real_A, skip it, it's an original image
+        if image_name.find('_real_A') != -1:
+            continue
+        if image_name.find('_fake_B') != -1:
+            image_name = image_name.replace('_fake_B', '')
         if image_name.find('AOD') != -1:
             image_name = image_name.replace('_AOD-Net', '')
         if image_name.find('dehaze') != -1:
@@ -159,16 +177,18 @@ def mAP_test(image_dir, file_dir):
 
         gt_bbox = resize_bbox(ori_gt_bbox, scale, padding)
 
-        results = model.detect([image], verbose=0)
+        results = mask_rcnn_model.detect([image], verbose=0)
         r = results[0]
-        save_path = os.path.join("Mask_RCNN/", image_name + '.png')
+        save_path = os.path.join("Mask_RCNN/", image_name)
 
-        visualize.display_instances(image, r['rois'], r['masks'], r['class_ids'],
-                                    class_names, r['scores'], figsize=(8, 8), show_mask=False, save_path=save_path)
+        # visualize.display_instances(image, r['rois'], r['masks'], r['class_ids'],
+        #                             class_names, r['scores'], figsize=(8, 8), show_mask=False, save_path=None)
         AP, precisions, recalls, overlap = \
             utils.compute_box_ap(gt_bbox, gt_class_id,
                                  r["rois"], r["class_ids"], r["scores"])
         APs.append(AP)
+        print(' # Images Processed: ', i)
+        i += 1
 
     t2 = time.time() - t1
     print("using time: ", t2)
@@ -182,7 +202,17 @@ if __name__== "__main__":
                         help='Directory where RTTS annotations are present')
     parser.add_argument('--target', type=str, default="RTTS/DemoImages",
                         help='Image directory for which to compute mAP')
+    parser.add_argument('--gpuId', type=str, default='0', help="Specify the GPU Id")
     opt = parser.parse_args()
+    # Root directory of the project
+    ROOT_DIR = os.path.abspath("")
+    sys.path.append(ROOT_DIR)  # To find local version of the library
+
+    # Import COCO config
+    sys.path.append(os.path.join(ROOT_DIR, "samples/coco/"))  # To find local version
+
     dehazed_dir = os.path.join(ROOT_DIR,opt.target)
     annotations_dir = os.path.join(ROOT_DIR, opt.annotations)
+    config = create_config()
+    mask_rcnn_model = load_mrcnn_model(ROOT_DIR, opt.gpuId)
     mAP_test(dehazed_dir, annotations_dir)
