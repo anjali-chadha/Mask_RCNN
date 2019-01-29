@@ -62,6 +62,9 @@ def parse_annotation(image_name, file_dir):
     file_name = name + '.xml'
     xml_file = os.path.join(file_dir, file_name)
     parse_doc = minidom.parse(xml_file)
+    img_size = parse_doc.getElementsByTagName("size")[0]
+    width = int(img_size.getElementsByTagName("width")[0].firstChild.data)
+    height = int(img_size.getElementsByTagName("height")[0].firstChild.data)
     objects = parse_doc.getElementsByTagName("object")
     parse_metas = []
     for file_object in objects:
@@ -85,7 +88,7 @@ def parse_annotation(image_name, file_dir):
         gt_bbox.append(i[1:])
     gt_class_id = np.array(gt_class_id)
     gt_bbox = np.array(gt_bbox)
-    return gt_class_id, gt_bbox
+    return width, height, gt_class_id, gt_bbox
 
 
 def resize_bbox(bbox, scale, padding):
@@ -151,12 +154,12 @@ def mAP_test(image_dir, file_dir):
     APs = []
     t1 = time.time()
     image_names = next(os.walk(image_dir))[2]
-    print("Sorting")
-    # image_names.sort()
     i = 1
-    print("Started")
     for image_name in image_names:
         image = skimage.io.imread(os.path.join(image_dir, image_name))
+        image_dtype = image.dtype
+        orig_width, orig_height, gt_class_id, ori_gt_bbox = parse_annotation(image_name, file_dir)
+        image = (utils.resize(image, (orig_height, orig_width), preserve_range=True)).astype(image_dtype)
         image, window, scale, padding, crop = utils.resize_image(
             image,
             min_dim=config.IMAGE_MIN_DIM,
@@ -173,7 +176,6 @@ def mAP_test(image_dir, file_dir):
             image_name = image_name.replace('_AOD-Net', '')
         if image_name.find('dehaze') != -1:
             image_name = image_name.replace('_dehazed', '')
-        gt_class_id, ori_gt_bbox = parse_annotation(image_name, file_dir)
 
         gt_bbox = resize_bbox(ori_gt_bbox, scale, padding)
 
@@ -187,7 +189,7 @@ def mAP_test(image_dir, file_dir):
             utils.compute_box_ap(gt_bbox, gt_class_id,
                                  r["rois"], r["class_ids"], r["scores"])
         APs.append(AP)
-        print(' # Images Processed: ', i)
+        print('Image Processed #{0}, name: {1}, mAP: {2}: '.format(i, image_name, AP))
         i += 1
 
     t2 = time.time() - t1
