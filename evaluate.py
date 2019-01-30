@@ -34,7 +34,7 @@ def create_config():
     return c
 
 
-def load_mrcnn_model(root_dir, gpuId):
+def load_mrcnn_model(root_dir):
     # Directory to save logs and trained model
     MODEL_DIR = os.path.join(root_dir, "logs")
 
@@ -44,9 +44,7 @@ def load_mrcnn_model(root_dir, gpuId):
     if not os.path.exists(COCO_MODEL_PATH):
         utils.download_trained_weights(COCO_MODEL_PATH)
 
-    DEVICE = "/gpu:"+gpuId  # /cpu:0 or /gpu:0
     # Create model object in inference mode.
-    # with tf.device(DEVICE):
     model = modellib.MaskRCNN(mode="inference", model_dir=MODEL_DIR, config=config)
     # Load weights trained on MS-COCO
     model.load_weights(COCO_MODEL_PATH, by_name=True)
@@ -154,19 +152,11 @@ def mAP_test(image_dir, file_dir):
     APs = []
     t1 = time.time()
     image_names = next(os.walk(image_dir))[2]
+    image_names.sort()
     i = 1
     for image_name in image_names:
         image = skimage.io.imread(os.path.join(image_dir, image_name))
         image_dtype = image.dtype
-        orig_width, orig_height, gt_class_id, ori_gt_bbox = parse_annotation(image_name, file_dir)
-        image = (utils.resize(image, (orig_height, orig_width), preserve_range=True)).astype(image_dtype)
-        image, window, scale, padding, crop = utils.resize_image(
-            image,
-            min_dim=config.IMAGE_MIN_DIM,
-            min_scale=config.IMAGE_MIN_SCALE,
-            max_dim=config.IMAGE_MAX_DIM,
-            mode=config.IMAGE_RESIZE_MODE)
-
         # If image name has prefix real_A, skip it, it's an original image
         if image_name.find('_real_A') != -1:
             continue
@@ -176,6 +166,14 @@ def mAP_test(image_dir, file_dir):
             image_name = image_name.replace('_AOD-Net', '')
         if image_name.find('dehaze') != -1:
             image_name = image_name.replace('_dehazed', '')
+        orig_width, orig_height, gt_class_id, ori_gt_bbox = parse_annotation(image_name, file_dir)
+        image = (utils.resize(image, (orig_height, orig_width), preserve_range=True)).astype(image_dtype)
+        image, window, scale, padding, crop = utils.resize_image(
+            image,
+            min_dim=config.IMAGE_MIN_DIM,
+            min_scale=config.IMAGE_MIN_SCALE,
+            max_dim=config.IMAGE_MAX_DIM,
+            mode=config.IMAGE_RESIZE_MODE)
 
         gt_bbox = resize_bbox(ori_gt_bbox, scale, padding)
 
@@ -215,6 +213,8 @@ if __name__== "__main__":
 
     dehazed_dir = os.path.join(ROOT_DIR,opt.target)
     annotations_dir = os.path.join(ROOT_DIR, opt.annotations)
+    DEVICE = "/gpu:"+ opt.gpuId  # /cpu:0 or /gpu:0
     config = create_config()
-    mask_rcnn_model = load_mrcnn_model(ROOT_DIR, opt.gpuId)
+    # with tf.device(DEVICE):
+    mask_rcnn_model = load_mrcnn_model(ROOT_DIR)
     mAP_test(dehazed_dir, annotations_dir)
